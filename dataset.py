@@ -46,8 +46,56 @@ class MelanomaDataset(Dataset):
         else:
             return data, torch.tensor(self.csv.iloc[index].target).long()
 
+class SIIMISICDataset(Dataset):
+    def __init__(self, csv, split, mode, transform=None):
 
+        self.csv = csv.reset_index(drop=True)
+        self.split = split
+        self.mode = mode
+        self.transform = transform
 
+    def __len__(self):
+        return self.csv.shape[0]
+
+    def __getitem__(self, index):
+        row = self.csv.iloc[index]
+        
+        image = cv2.imread(row.filepath)
+        image = image[:, :, ::-1]
+
+        if self.transform is not None:
+            res = self.transform(image=image)
+            image = res['image'].astype(np.float32)
+        else:
+            image = image.astype(np.float32)
+
+        image = image.transpose(2, 0, 1)
+
+        if self.mode == 'test':
+            return torch.tensor(image).float()
+        else:
+            return torch.tensor(image).float(), torch.tensor(self.csv.iloc[index].target).long()
+
+class enetv2(nn.Module):
+    def __init__(self, backbone, out_dim, n_meta_features=0, load_pretrained=False):
+
+        super(enetv2, self).__init__()
+        self.n_meta_features = n_meta_features
+        self.enet = geffnet.create_model(enet_type.replace('-', '_'), pretrained=load_pretrained)
+        self.dropout = nn.Dropout(0.5)
+
+        in_ch = self.enet.classifier.in_features
+        self.myfc = nn.Linear(in_ch, out_dim)
+        self.enet.classifier = nn.Identity()
+
+    def extract(self, x):
+        x = self.enet(x)
+        return x
+
+    def forward(self, x, x_meta=None):
+        x = self.extract(x).squeeze(-1).squeeze(-1)
+        x = self.myfc(self.dropout(x))
+        return x
 
 def get_transforms(image_size):
 
@@ -128,12 +176,12 @@ def get_meta_data(df_train, df_test):
     return df_train, df_test, meta_features, n_meta_features
 
 
-def get_df(kernel_type, out_dim, data_dir, data_folder, use_meta):
+def get_df(kernel_type, out_dim, data_path, use_meta):
 
     # 2020 data
-    df_train = pd.read_csv(os.path.join(data_dir, f'jpeg-melanoma-{data_folder}x{data_folder}', 'train.csv'))
-    df_train = df_train[df_train['tfrecord'] != -1].reset_index(drop=True)
-    df_train['filepath'] = df_train['image_name'].apply(lambda x: os.path.join(data_dir, f'jpeg-melanoma-{data_folder}x{data_folder}/train', f'{x}.jpg'))
+    #df_train = pd.read_csv(os.path.join(data_dir, f'jpeg-melanoma-{data_folder}x{data_folder}', 'train.csv'))
+    #df_train = df_train[df_train['tfrecord'] != -1].reset_index(drop=True)
+    #df_train['filepath'] = df_train['image_name'].apply(lambda x: os.path.join(data_dir, f'jpeg-melanoma-{data_folder}x{data_folder}/train', f'{x}.jpg'))
 
     if 'newfold' in kernel_type:
         tfrecord2fold = {
@@ -153,25 +201,25 @@ def get_df(kernel_type, out_dim, data_dir, data_folder, use_meta):
             3:3, 8:3, 11:3,
             6:4, 7:4, 14:4,
         }
-    df_train['fold'] = df_train['tfrecord'].map(tfrecord2fold)
-    df_train['is_ext'] = 0
+    #df_train['fold'] = df_train['tfrecord'].map(tfrecord2fold)
+    #df_train['is_ext'] = 0
 
     # 2018, 2019 data (external data)
-    df_train2 = pd.read_csv(os.path.join(data_dir, f'jpeg-isic2019-{data_folder}x{data_folder}', 'train.csv'))
-    df_train2 = df_train2[df_train2['tfrecord'] >= 0].reset_index(drop=True)
-    df_train2['filepath'] = df_train2['image_name'].apply(lambda x: os.path.join(data_dir, f'jpeg-isic2019-{data_folder}x{data_folder}/train', f'{x}.jpg'))
-    if 'newfold' in kernel_type:
-        df_train2['tfrecord'] = df_train2['tfrecord'] % 15
-        df_train2['fold'] = df_train2['tfrecord'].map(tfrecord2fold)
-    else:
-        df_train2['fold'] = df_train2['tfrecord'] % 5
-    df_train2['is_ext'] = 1
+    #df_train2 = pd.read_csv(os.path.join(data_dir, f'jpeg-isic2019-{data_folder}x{data_folder}', 'train.csv'))
+    #df_train2 = df_train2[df_train2['tfrecord'] >= 0].reset_index(drop=True)
+    #df_train2['filepath'] = df_train2['image_name'].apply(lambda x: os.path.join(data_dir, f'jpeg-isic2019-{data_folder}x{data_folder}/train', f'{x}.jpg'))
+    #if 'newfold' in kernel_type:
+    #    df_train2['tfrecord'] = df_train2['tfrecord'] % 15
+    #    df_train2['fold'] = df_train2['tfrecord'].map(tfrecord2fold)
+    #else:
+    #    df_train2['fold'] = df_train2['tfrecord'] % 5
+    #df_train2['is_ext'] = 1
 
     # Preprocess Target
-    df_train['diagnosis']  = df_train['diagnosis'].apply(lambda x: x.replace('seborrheic keratosis', 'BKL'))
-    df_train['diagnosis']  = df_train['diagnosis'].apply(lambda x: x.replace('lichenoid keratosis', 'BKL'))
-    df_train['diagnosis']  = df_train['diagnosis'].apply(lambda x: x.replace('solar lentigo', 'BKL'))
-    df_train['diagnosis']  = df_train['diagnosis'].apply(lambda x: x.replace('lentigo NOS', 'BKL'))
+    #df_train['diagnosis']  = df_train['diagnosis'].apply(lambda x: x.replace('seborrheic keratosis', 'BKL'))
+    #df_train['diagnosis']  = df_train['diagnosis'].apply(lambda x: x.replace('lichenoid keratosis', 'BKL'))
+    #df_train['diagnosis']  = df_train['diagnosis'].apply(lambda x: x.replace('solar lentigo', 'BKL'))
+    """ df_train['diagnosis']  = df_train['diagnosis'].apply(lambda x: x.replace('lentigo NOS', 'BKL'))
     df_train['diagnosis']  = df_train['diagnosis'].apply(lambda x: x.replace('cafe-au-lait macule', 'unknown'))
     df_train['diagnosis']  = df_train['diagnosis'].apply(lambda x: x.replace('atypical melanocytic proliferation', 'unknown'))
 
@@ -191,20 +239,20 @@ def get_df(kernel_type, out_dim, data_dir, data_folder, use_meta):
 
     # concat train data
     df_train = pd.concat([df_train, df_train2]).reset_index(drop=True)
-
+    """
     # test data
-    df_test = pd.read_csv(os.path.join(data_dir, f'jpeg-melanoma-{data_folder}x{data_folder}', 'test.csv'))
-    df_test['filepath'] = df_test['image_name'].apply(lambda x: os.path.join(data_dir, f'jpeg-melanoma-{data_folder}x{data_folder}/test', f'{x}.jpg'))
+    df_test = pd.read_csv(data_path)
+    df_test['filepath'] = df_test['image_name']
 
     if use_meta:
-        df_train, df_test, meta_features, n_meta_features = get_meta_data(df_train, df_test)
+        df_test, meta_features, n_meta_features = get_meta_data(df_test)
     else:
         meta_features = None
         n_meta_features = 0
 
     # class mapping
-    diagnosis2idx = {d: idx for idx, d in enumerate(sorted(df_train.diagnosis.unique()))}
-    df_train['target'] = df_train['diagnosis'].map(diagnosis2idx)
-    mel_idx = diagnosis2idx['melanoma']
+    #diagnosis2idx = {d: idx for idx, d in enumerate(sorted(df_train.diagnosis.unique()))}
+    #df_train['target'] = df_train['diagnosis'].map(diagnosis2idx)
+    mel_idx = 1
 
-    return df_train, df_test, meta_features, n_meta_features, mel_idx
+    return df_test, meta_features, n_meta_features, mel_idx

@@ -20,9 +20,10 @@ from torch.optim.lr_scheduler import CosineAnnealingLR
 from util import GradualWarmupSchedulerV2
 import apex
 from apex import amp
-from dataset import get_df, get_transforms, MelanomaDataset
+from dataset import get_df, get_transforms, MelanomaDataset, SIIMISICDataset, enetv2
 from models import Effnet_Melanoma, Resnest_Melanoma, Seresnext_Melanoma
 from train import get_trans
+import csv
 
 
 def parse_args():
@@ -45,6 +46,7 @@ def parse_args():
     parser.add_argument('--n-test', type=int, default=8)
     parser.add_argument('--CUDA_VISIBLE_DEVICES', type=str, default='0')
     parser.add_argument('--n-meta-dim', type=str, default='512,128')
+    parser.add_argument('--data-path', type=str, required=True)
 
     args, _ = parser.parse_known_args()
     return args
@@ -55,8 +57,7 @@ def main():
     df, df_test, meta_features, n_meta_features, mel_idx = get_df(
         args.kernel_type,
         args.out_dim,
-        args.data_dir,
-        args.data_folder,
+        args.data_path,
         args.use_meta
     )
 
@@ -72,8 +73,7 @@ def main():
     for fold in range(5):
 
         if args.eval == 'best':
-            model_file = 
-            os.path.join(args.model_dir, f'{args.kernel_type}_best_fold{fold}.pth')
+            model_file = os.path.join(args.model_dir, f'{args.kernel_type}_best_fold{fold}.pth')
         elif args.eval == 'best_20':
             model_file = os.path.join(args.model_dir, f'{args.kernel_type}_best_20_fold{fold}.pth')
         if args.eval == 'final':
@@ -128,12 +128,59 @@ def main():
     PROBS = torch.cat(PROBS).numpy()
 
     # save cvs
-    df_test['target'] = PROBS[:, mel_idx]
-    df_test[['image_name', 'target']].to_csv(os.path.join(args.sub_dir, f'sub_{args.kernel_type}_{args.eval}.csv'), index=False)
+    df_test['target'] = PROBS
+    #df_test[['image_name', 'target']].to_csv(os.path.join(args.sub_dir, f'sub_{args.kernel_type}_{args.eval}.csv'), index=False)
+    return df_test[['target']]
+
+def infer_single_image(
+    age,
+    image_name,
+    patient_id,
+    sex,
+    image_path,
+    site,
+    image_size,
+    enet_type,
+    kernel_type
+    ):
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    _, transforms_val = get_transforms(image_size)
+    with open('datasettesting.csv', 'w', newline='') as file:
+        writer = csv.writer(file)
+        writer.writerow(["image_name", "patient_id", "sex", "age_approx", "anatom_site_general_challenge", "width", "height", "filepath"])
+        writer.writerow([image_name, patient_id, sex, age, site, 6000, 4000, image_path])
+    
+    df_single_image = pd.read_csv('datasettesting.csv')
+    
+    dataset_test = SIIMISICDataset(df_single_image, 'test', 'test', transform=transforms_val)
+    image = dataset_test[0]  
+    image = image.to(device).unsqueeze(0)
+
+    models = []
+    for i_fold in range(5):
+        model = enetv2(enet_type, n_meta_features=0, out_dim=9)
+        model = model.to(device)
+        model_file = os.path.join(f'{kernel_type}_best_fold{i_fold}.pth')
+        state_dict = torch.load(model_file)
+        state_dict = {k.replace('module.', ''): state_dict[k] for k in state_dict.keys()}
+        model.load_state_dict(state_dict, strict=True)
+        model.eval()
+        models.append(model)
+    print(len(models))
+
+    n_test = 8
+    with torch.no_grad():
+        probs = torch.zeros((image.shape[0], 9)).to(device)
+        for model in models:
+            for I in range(n_test):
+                l = model(get_trans(image, I))
+                probs += l.softmax(1)
+        probs /= len(models) * n_test
+    return probs
 
 
 if __name__ == '__main__':
-
+    """
     args = parse_args()
     os.makedirs(args.sub_dir, exist_ok=True)
     os.environ['CUDA_VISIBLE_DEVICES'] = args.CUDA_VISIBLE_DEVICES
@@ -152,3 +199,25 @@ if __name__ == '__main__':
     device = torch.device('cuda')
 
     main()
+    """
+    age = 70
+    image_name = "hello"
+    patient_id = 'IP22423'
+    sex = 'male'
+    image_path = "testImage.jpg"
+    site = "torso"
+    image_size = 640
+    enet_type = 'efficientnet-b7'
+    kernel_type = "4c_b5ns_1.5e_640_ext_15ep"
+
+    infer_single_image(
+        age,
+        image_name,
+        patient_id,
+        sex,
+        image_path,
+        site,
+        image_size,
+        enet_type,
+        kernel_type
+    )
